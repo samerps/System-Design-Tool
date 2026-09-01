@@ -1,24 +1,59 @@
 from pathlib import Path
 import os
+import hashlib
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-KEY = b"01234567890123456789012345678901"
+PASSWORD = b"test-password"
+ITERATIONS = 600_000
 
-input_file = Path("inverter_base.py")
-output_file = Path("inverter_base.py.enc")
 
-data = input_file.read_bytes()
+def derive_key(password: bytes, salt: bytes) -> bytes:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password,
+        salt,
+        ITERATIONS,
+        dklen=32,
+    )
 
-nonce = os.urandom(12)
 
-encrypted = AESGCM(KEY).encrypt(
-    nonce,
-    data,
-    None
-)
+def encrypt_file(input_file: str, output_file: str):
+    input_path = Path(input_file)
+    output_path = Path(output_file)
 
-output_file.write_bytes(nonce + encrypted)
+    data = input_path.read_bytes()
 
-print(f"Encrypted {input_file} -> {output_file}")
-print(f"Original size: {len(data)} bytes")
-print(f"Encrypted size: {len(nonce + encrypted)} bytes")
+    # Random 128-bit salt
+    salt = os.urandom(16)
+
+    # Derive AES-256 key
+    key = derive_key(PASSWORD, salt)
+
+    # Random 96-bit AES-GCM nonce
+    nonce = os.urandom(12)
+
+    encrypted = AESGCM(key).encrypt(
+        nonce,
+        data,
+        None,
+    )
+
+    # File format:
+    #
+    # [16 byte salt]
+    # [12 byte nonce]
+    # [ciphertext + 16 byte GCM authentication tag]
+    #
+    output_path.write_bytes(
+        salt + nonce + encrypted
+    )
+
+    print(
+        f"{input_path} -> {output_path} "
+        f"({len(data)} -> {len(salt + nonce + encrypted)} bytes)"
+    )
+
+
+encrypt_file("app.py", "app.py.enc")
+encrypt_file("inverter_base.py", "inverter_base.py.enc")
+encrypt_file("assets/logo.png", "assets/logo.png.enc")

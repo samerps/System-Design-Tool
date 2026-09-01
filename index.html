@@ -8,112 +8,202 @@
 </head>
 
 <body>
-    <div id="root"></div>
 
-    <script>
-        async function loadTextFile(url) {
-            const response = await fetch(url);
+<div id="root"></div>
 
-            if (!response.ok) {
-                throw new Error(`Failed to load ${url}: ${response.status}`);
+<script>
+
+const ITERATIONS = 600000;
+
+
+// ------------------------------------------------------------
+// Fetch a binary file
+// ------------------------------------------------------------
+
+async function loadBinaryFile(url) {
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+        throw new Error(
+            `Failed to load ${url}: ${response.status}`
+        );
+    }
+
+    return new Uint8Array(
+        await response.arrayBuffer()
+    );
+}
+
+
+// ------------------------------------------------------------
+// Derive AES-256 key from password
+// ------------------------------------------------------------
+
+async function deriveKey(password, salt) {
+
+    const passwordBytes =
+        new TextEncoder().encode(password);
+
+    const baseKey =
+        await crypto.subtle.importKey(
+            "raw",
+            passwordBytes,
+            "PBKDF2",
+            false,
+            ["deriveKey"]
+        );
+
+    return await crypto.subtle.deriveKey(
+        {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: ITERATIONS,
+            hash: "SHA-256"
+        },
+        baseKey,
+        {
+            name: "AES-GCM",
+            length: 256
+        },
+        false,
+        ["decrypt"]
+    );
+}
+
+
+// ------------------------------------------------------------
+// Decrypt an encrypted file
+// ------------------------------------------------------------
+
+async function decryptFile(url, password) {
+
+    const encrypted =
+        await loadBinaryFile(url);
+
+    // File format:
+    //
+    // 16 bytes  salt
+    // 12 bytes  nonce
+    // remaining ciphertext + GCM tag
+
+    const salt =
+        encrypted.slice(0, 16);
+
+    const nonce =
+        encrypted.slice(16, 28);
+
+    const ciphertext =
+        encrypted.slice(28);
+
+
+    const key =
+        await deriveKey(password, salt);
+
+
+    const plaintext =
+        await crypto.subtle.decrypt(
+            {
+                name: "AES-GCM",
+                iv: nonce
+            },
+            key,
+            ciphertext
+        );
+
+
+    return new Uint8Array(plaintext);
+}
+
+
+// ------------------------------------------------------------
+// Start application
+// ------------------------------------------------------------
+
+async function startApp() {
+
+    const password =
+        prompt("Enter password:");
+
+    if (!password) {
+        throw new Error("Password required");
+    }
+
+
+    console.log("Decrypting application files...");
+
+
+    // Python files
+    const app =
+        await decryptFile(
+            "app.py.enc",
+            password
+        );
+
+    const inverterBase =
+        await decryptFile(
+            "inverter_base.py.enc",
+            password
+        );
+
+
+    // PNG
+    const logo =
+        await decryptFile(
+            "assets/logo.png.enc",
+            password
+        );
+
+
+    console.log("Decryption successful");
+
+
+    // Convert Python source from UTF-8 bytes to text
+    const appText =
+        new TextDecoder().decode(app);
+
+    const inverterBaseText =
+        new TextDecoder().decode(inverterBase);
+
+
+    // Mount stlite
+    stlite.mount(
+        {
+            requirements: ["numpy"],
+
+            entrypoint: "app.py",
+
+            files: {
+
+                "app.py":
+                    appText,
+
+                "inverter_base.py":
+                    inverterBaseText,
+
+                "assets/logo.png":
+                    logo
             }
+        },
 
-            return await response.text();
-        }
+        document.getElementById("root")
+    );
+}
 
-        async function loadBinaryFile(url) {
-            const response = await fetch(url);
 
-            if (!response.ok) {
-                throw new Error(`Failed to load ${url}: ${response.status}`);
-            }
+// ------------------------------------------------------------
+// Error handling
+// ------------------------------------------------------------
 
-            return new Uint8Array(await response.arrayBuffer());
-        }
+startApp().catch(error => {
 
-        async function startApp() {
+    console.error(error);
 
-            const app = await loadTextFile("app.py");
+    document.getElementById("root").innerHTML =
+        `<pre style="color:red">${error.stack || error}</pre>`;
+});
 
-            const inverterBase =
-                await decryptFile("inverter_base.py.enc");
+</script>
 
-            const logo =
-                await loadBinaryFile("assets/logo.png");
-
-            stlite.mount(
-                {
-                    requirements: ["numpy"],
-
-                    entrypoint: "app.py",
-
-                    files: {
-                        "app.py": app,
-                        "inverter_base.py": inverterBase,
-                        "assets/logo.png": logo
-                    }
-                },
-
-                document.getElementById("root")
-            );
-        }
-
-        async function decryptFile(url) {
-
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    throw new Error(`Failed to load ${url}: ${response.status}`);
-                }
-
-                const encrypted = new Uint8Array(
-                    await response.arrayBuffer()
-                );
-
-                console.log("Encrypted file size:", encrypted.length);
-
-                // First 12 bytes = AES-GCM nonce
-                const nonce = encrypted.slice(0, 12);
-
-                // Everything after the nonce = ciphertext + authentication tag
-                const ciphertext = encrypted.slice(12);
-
-                const keyBytes = new TextEncoder().encode(
-                    "01234567890123456789012345678901"
-                );
-
-                console.log("Key length:", keyBytes.length);
-                console.log("Nonce length:", nonce.length);
-                console.log("Ciphertext length:", ciphertext.length);
-
-                const cryptoKey = await crypto.subtle.importKey(
-                    "raw",
-                    keyBytes,
-                    {
-                        name: "AES-GCM"
-                    },
-                    false,
-                    ["decrypt"]
-                );
-
-                const decrypted = await crypto.subtle.decrypt(
-                    {
-                        name: "AES-GCM",
-                        iv: nonce
-                    },
-                    cryptoKey,
-                    ciphertext
-                );
-
-                return new TextDecoder().decode(decrypted);
-            }
-
-        startApp().catch(error => {
-            console.error(error);
-
-            document.getElementById("root").innerHTML =
-                `<pre>${error.stack || error}</pre>`;
-        });
-    </script>
 </body>
 </html>
